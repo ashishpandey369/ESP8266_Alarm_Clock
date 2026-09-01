@@ -19,11 +19,11 @@ bool RTCManager::begin() {
     return true;
 }
 
-bool RTCManager::isRunning() const {
+bool RTCManager::isRunning() {
     return initialized_ && rtc_.isrunning();
 }
 
-bool RTCManager::hasValidTime() const {
+bool RTCManager::hasValidTime() {
     if (!initialized_) {
         return false;
     }
@@ -32,7 +32,7 @@ bool RTCManager::hasValidTime() const {
     return now.isValid() && now.year() >= 2000 && now.year() <= 2099;
 }
 
-bool RTCManager::getTime(uint8_t &hour, uint8_t &minute) const {
+bool RTCManager::getTime(uint8_t &hour, uint8_t &minute) {
     if (!initialized_) {
         return false;
     }
@@ -65,7 +65,7 @@ bool RTCManager::setTime(uint8_t hour, uint8_t minute) {
     return true;
 }
 
-void RTCManager::printStatus(Stream &serial) const {
+void RTCManager::printStatus(Stream &serial) {
     if (!initialized_) {
         serial.println(F("RTC: NOT FOUND (DS1307 did not respond at 0x68)"));
         return;
