@@ -8,6 +8,7 @@ public:
 
     void begin();
     void showTime(uint8_t hour, uint8_t minute, bool colon = true);
+    void showEditingTime(uint8_t hour, uint8_t minute, bool blinkHours, bool blinkMinutes, bool colon = true);
     void showNumber(int value);
     void clear();
     void setBrightness(uint8_t level);
