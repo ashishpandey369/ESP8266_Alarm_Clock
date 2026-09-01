@@ -16,6 +16,8 @@ public:
     bool matches(uint8_t hour, uint8_t minute) const;
 
 private:
+    void save() const;
+
     uint8_t hour_;
     uint8_t minute_;
     bool enabled_;
