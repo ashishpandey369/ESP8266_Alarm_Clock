@@ -72,3 +72,36 @@ void Buzzer::stopAlarm() {
 bool Buzzer::isActive() const {
     return active_;
 }
+
+void Buzzer::runDiagnostic(Stream &serial) {
+    // Make absolutely sure no previous tone is running.
+    off();
+
+    serial.println();
+    serial.println(F("========== BUZZER DIAGNOSTIC =========="));
+    serial.print(F("Buzzer GPIO: "));
+    serial.println(pin_);
+
+    // TEST 1: static HIGH. Useful for an active buzzer or for checking
+    // whether the transistor stage switches at all.
+    serial.println(F("TEST 1: D0 HIGH for 2 seconds..."));
+    digitalWrite(pin_, HIGH);
+    delay(2000);
+    digitalWrite(pin_, LOW);
+    serial.println(F("TEST 1 complete."));
+
+    delay(500);
+
+    // TEST 2: passive piezo tone.
+    serial.println(F("TEST 2: 2.2 kHz tone for 3 seconds..."));
+    tone(pin_, ALARM_FREQUENCY_HZ);
+    delay(3000);
+    noTone(pin_);
+    digitalWrite(pin_, LOW);
+    serial.println(F("TEST 2 complete."));
+
+    serial.println(F("========== DIAGNOSTIC COMPLETE =========="));
+    serial.println(F("If TEST 1 or TEST 2 produced sound, the buzzer hardware is responding."));
+    serial.println(F("If both were silent, check buzzer/transistor wiring and buzzer type."));
+    serial.println();
+}
