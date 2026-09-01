@@ -13,6 +13,25 @@ void ClockDisplay::showTime(uint8_t hour, uint8_t minute, bool colon) {
     display_.showNumberDecEx(value, colon ? 0b01000000 : 0, true);
 }
 
+void ClockDisplay::showEditingTime(uint8_t hour, uint8_t minute, bool blinkHours, bool blinkMinutes, bool colon) {
+    uint8_t segments[4];
+    const uint8_t hourTens = hour / 10;
+    const uint8_t hourOnes = hour % 10;
+    const uint8_t minuteTens = minute / 10;
+    const uint8_t minuteOnes = minute % 10;
+
+    segments[0] = blinkHours ? 0x00 : display_.encodeDigit(hourTens);
+    segments[1] = blinkHours ? 0x00 : display_.encodeDigit(hourOnes);
+    segments[2] = blinkMinutes ? 0x00 : display_.encodeDigit(minuteTens);
+    segments[3] = blinkMinutes ? 0x00 : display_.encodeDigit(minuteOnes);
+
+    if (colon) {
+        segments[1] |= 0b01000000;
+    }
+
+    display_.setSegments(segments);
+}
+
 void ClockDisplay::showNumber(int value) {
     display_.showNumberDec(value, true);
 }
