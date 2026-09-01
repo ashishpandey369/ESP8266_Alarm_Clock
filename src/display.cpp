@@ -25,7 +25,10 @@ void ClockDisplay::showEditingTime(uint8_t hour, uint8_t minute, bool blinkHours
     segments[2] = blinkMinutes ? 0x00 : display_.encodeDigit(minuteTens);
     segments[3] = blinkMinutes ? 0x00 : display_.encodeDigit(minuteOnes);
 
-    if (colon) {
+    // The TM1637 4-digit module uses the center-colon indication through
+    // the second digit. Do not set it while the hours field is blank, or
+    // it appears as a stray center segment on the blank second digit.
+    if (colon && !blinkHours) {
         segments[1] |= 0b01000000;
     }
 
