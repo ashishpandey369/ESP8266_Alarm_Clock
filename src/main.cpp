@@ -2,15 +2,19 @@
 #include "pin.h"
 #include "display.h"
 #include "button.h"
+#include "rtc.h"
 
 ClockDisplay clockDisplay(Pins::DISPLAY_CLK, Pins::DISPLAY_DIO);
 Button modeButton(Pins::BUTTON_SET);
 Button upButton(Pins::BUTTON_UP);
 Button downButton(Pins::BUTTON_DOWN);
+RTCManager rtc;
 
 namespace {
 constexpr unsigned long COLON_BLINK_INTERVAL_MS = 1000;
 constexpr unsigned long EDIT_BLINK_INTERVAL_MS = 500;
+constexpr unsigned long RTC_REFRESH_INTERVAL_MS = 200;
+constexpr unsigned long RTC_STATUS_INTERVAL_MS = 5000;
 
 uint8_t currentHour = 12;
 uint8_t currentMinute = 34;
@@ -25,6 +29,8 @@ EditMode editMode = EditMode::Normal;
 
 unsigned long lastColonToggle = 0;
 unsigned long lastEditBlink = 0;
+unsigned long lastRtcRefresh = 0;
+unsigned long lastRtcStatus = 0;
 bool colonVisible = true;
 bool editFieldVisible = true;
 
@@ -41,6 +47,16 @@ void refreshDisplay() {
         editMode == EditMode::EditMinutes && !editFieldVisible,
         colonVisible
     );
+}
+
+void readRtcTime() {
+    uint8_t hour;
+    uint8_t minute;
+
+    if (rtc.getTime(hour, minute)) {
+        currentHour = hour;
+        currentMinute = minute;
+    }
 }
 
 void changeHour(int8_t amount) {
@@ -64,6 +80,7 @@ void changeMinute(int8_t amount) {
 }
 
 void enterEditHours() {
+    readRtcTime();
     editMode = EditMode::EditHours;
     editFieldVisible = true;
     lastEditBlink = millis();
@@ -80,8 +97,15 @@ void enterEditMinutes() {
 }
 
 void exitEditMode() {
+    if (rtc.setTime(currentHour, currentMinute)) {
+        Serial.println("RTC time saved.");
+    } else {
+        Serial.println("RTC time save failed.");
+    }
+
     editMode = EditMode::Normal;
     editFieldVisible = true;
+    readRtcTime();
     refreshDisplay();
     Serial.println("Edit mode: SAVED");
 }
@@ -98,13 +122,22 @@ void setup() {
     digitalWrite(Pins::BUZZER, LOW);
 
     clockDisplay.begin();
-    refreshDisplay();
 
     Serial.println();
-    Serial.println("ESP8266 Alarm Clock - time edit test");
-    Serial.println("MODE: hours -> minutes -> normal");
-    Serial.println("UP/DOWN: change selected value");
-    Serial.println("Hold UP/DOWN: fast change");
+    Serial.println("ESP8266 Alarm Clock - DS1307 RTC clock");
+    Serial.println("Initializing DS1307...");
+
+    if (rtc.begin()) {
+        rtc.printStatus(Serial);
+        readRtcTime();
+    } else {
+        Serial.println("RTC communication FAILED.");
+        Serial.println("Check DS1307 VCC, GND, SDA and SCL wiring.");
+    }
+
+    refreshDisplay();
+    lastRtcRefresh = millis();
+    lastRtcStatus = millis();
 }
 
 void loop() {
@@ -142,6 +175,13 @@ void loop() {
         downButton.repeatPressed();
     }
 
+    // In normal mode the DS1307 is the time source. The display therefore
+    // changes minute-by-minute and hour-by-hour according to the RTC.
+    if (editMode == EditMode::Normal && now - lastRtcRefresh >= RTC_REFRESH_INTERVAL_MS) {
+        lastRtcRefresh = now;
+        readRtcTime();
+    }
+
     // Blink the colon every second in normal mode and while editing.
     if (now - lastColonToggle >= COLON_BLINK_INTERVAL_MS) {
         lastColonToggle = now;
@@ -152,6 +192,13 @@ void loop() {
     if (editMode != EditMode::Normal && now - lastEditBlink >= EDIT_BLINK_INTERVAL_MS) {
         lastEditBlink = now;
         editFieldVisible = !editFieldVisible;
+    }
+
+    // Print the RTC status periodically so communication can be verified
+    // in the Serial Monitor without flooding it every loop.
+    if (now - lastRtcStatus >= RTC_STATUS_INTERVAL_MS) {
+        lastRtcStatus = now;
+        rtc.printStatus(Serial);
     }
 
     refreshDisplay();
