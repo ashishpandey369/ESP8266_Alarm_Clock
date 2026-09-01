@@ -5,6 +5,7 @@
 #include "button.h"
 #include "rtc.h"
 #include "alarm.h"
+#include "buzzer.h"
 
 ClockDisplay clockDisplay(Pins::DISPLAY_CLK, Pins::DISPLAY_DIO);
 Button modeButton(Pins::BUTTON_SET);
@@ -12,6 +13,7 @@ Button upButton(Pins::BUTTON_UP);
 Button downButton(Pins::BUTTON_DOWN);
 RTCManager rtc;
 AlarmManager alarm;
+Buzzer buzzer(Pins::BUZZER);
 
 namespace {
 constexpr unsigned long COLON_BLINK_INTERVAL_MS = 1000;
@@ -19,6 +21,8 @@ constexpr unsigned long EDIT_BLINK_INTERVAL_MS = 500;
 constexpr unsigned long RTC_REFRESH_INTERVAL_MS = 200;
 constexpr unsigned long RTC_STATUS_INTERVAL_MS = 5000;
 constexpr uint32_t MODE_LONG_PRESS_MS = 3000;
+constexpr uint32_t ALARM_RING_DURATION_MS = 5UL * 60UL * 1000UL;
+constexpr uint32_t SNOOZE_DURATION_MS = 5UL * 60UL * 1000UL;
 
 uint8_t currentHour = 12;
 uint8_t currentMinute = 34;
@@ -39,8 +43,13 @@ unsigned long lastColonToggle = 0;
 unsigned long lastEditBlink = 0;
 unsigned long lastRtcRefresh = 0;
 unsigned long lastRtcStatus = 0;
+unsigned long alarmStartedAt = 0;
+unsigned long snoozeUntil = 0;
 bool colonVisible = true;
 bool editFieldVisible = true;
+bool alarmRinging = false;
+bool snoozeActive = false;
+int lastAlarmMinuteKey = -1;
 
 bool isTimeEditing() {
     return editMode == EditMode::EditHours || editMode == EditMode::EditMinutes;
@@ -138,10 +147,14 @@ void exitEditMode() {
 }
 
 void enterAlarmHours() {
+    alarmHour = alarm.getHour();
+    alarmMinute = alarm.getMinute();
+
     editMode = EditMode::AlarmHours;
     editFieldVisible = true;
     lastEditBlink = millis();
     refreshDisplay();
+
     Serial.print("Alarm setup: HOURS | Current alarm: ");
     if (alarmHour < 10) Serial.print('0');
     Serial.print(alarmHour);
@@ -162,6 +175,12 @@ void saveAlarmAndGoHome() {
     alarm.setTime(alarmHour, alarmMinute);
     alarm.enable();
 
+    // A newly configured alarm gets a fresh trigger window.
+    lastAlarmMinuteKey = -1;
+    snoozeActive = false;
+    alarmRinging = false;
+    buzzer.stopAlarm();
+
     editMode = EditMode::Normal;
     editFieldVisible = true;
     readRtcTime();
@@ -175,6 +194,84 @@ void saveAlarmAndGoHome() {
     Serial.println(alarmMinute);
     Serial.println("Alarm enabled - HOME");
 }
+
+void startAlarm(const char *reason) {
+    if (alarmRinging) {
+        return;
+    }
+
+    alarmRinging = true;
+    snoozeActive = false;
+    alarmStartedAt = millis();
+    buzzer.startAlarm();
+
+    Serial.print("ALARM RINGING - ");
+    Serial.println(reason);
+    Serial.println("MODE = OFF | UP/DOWN = SNOOZE 5 MIN");
+}
+
+void stopAlarm() {
+    if (!alarmRinging && !snoozeActive) {
+        return;
+    }
+
+    alarmRinging = false;
+    snoozeActive = false;
+    buzzer.stopAlarm();
+    Serial.println("Alarm stopped.");
+}
+
+void snoozeAlarm() {
+    if (!alarmRinging) {
+        return;
+    }
+
+    alarmRinging = false;
+    snoozeActive = true;
+    snoozeUntil = millis() + SNOOZE_DURATION_MS;
+    buzzer.stopAlarm();
+
+    Serial.println("Alarm snoozed for 5 minutes.");
+}
+
+void handleAlarm() {
+    if (editMode != EditMode::Normal) {
+        return;
+    }
+
+    const unsigned long now = millis();
+
+    if (alarmRinging) {
+        buzzer.updateAlarm();
+
+        if (now - alarmStartedAt >= ALARM_RING_DURATION_MS) {
+            alarmRinging = false;
+            buzzer.stopAlarm();
+            Serial.println("Alarm stopped automatically after 5 minutes.");
+        }
+
+        return;
+    }
+
+    if (snoozeActive) {
+        if (static_cast<long>(now - snoozeUntil) >= 0) {
+            startAlarm("SNOOZE EXPIRED");
+        }
+        return;
+    }
+
+    if (!alarm.isEnabled()) {
+        return;
+    }
+
+    const int minuteKey = static_cast<int>(currentHour) * 60 + currentMinute;
+
+    // Trigger once when the RTC reaches the configured alarm minute.
+    if (alarm.matches(currentHour, currentMinute) && minuteKey != lastAlarmMinuteKey) {
+        lastAlarmMinuteKey = minuteKey;
+        startAlarm("SCHEDULED TIME");
+    }
+}
 }
 
 void setup() {
@@ -184,11 +281,13 @@ void setup() {
     modeButton.begin();
     upButton.begin();
     downButton.begin();
-    pinMode(Pins::BUZZER, OUTPUT);
-    digitalWrite(Pins::BUZZER, LOW);
+    buzzer.begin();
 
     clockDisplay.begin();
-    alarm.begin(alarmHour, alarmMinute);
+    alarm.begin(Config::DEFAULT_ALARM_HOUR, Config::DEFAULT_ALARM_MINUTE);
+
+    alarmHour = alarm.getHour();
+    alarmMinute = alarm.getMinute();
 
     Serial.println();
     Serial.println("ESP8266 Alarm Clock - DS1307 RTC clock");
@@ -205,6 +304,15 @@ void setup() {
     Serial.println("MODE short press: clock setting");
     Serial.println("MODE long press (3 seconds): alarm setting");
 
+    Serial.print("Stored alarm: ");
+    if (alarmHour < 10) Serial.print('0');
+    Serial.print(alarmHour);
+    Serial.print(':');
+    if (alarmMinute < 10) Serial.print('0');
+    Serial.print(alarmMinute);
+    Serial.print(" | Enabled: ");
+    Serial.println(alarm.isEnabled() ? "YES" : "NO");
+
     refreshDisplay();
     lastRtcRefresh = millis();
     lastRtcStatus = millis();
@@ -213,63 +321,75 @@ void setup() {
 void loop() {
     const unsigned long now = millis();
 
-    // MODE supports two actions from HOME:
-    // short press -> clock setting, 3-second hold -> alarm setting.
     const Button::Event modeEvent = modeButton.event(MODE_LONG_PRESS_MS);
 
-    if (modeEvent == Button::Event::LongPress) {
-        if (editMode == EditMode::Normal) {
-            enterAlarmHours();
+    // While the alarm is ringing, MODE always silences it. UP/DOWN snooze it.
+    // This is handled before normal menu navigation so the alarm cannot
+    // accidentally enter a settings screen while it is ringing.
+    if (alarmRinging || snoozeActive) {
+        if (modeEvent != Button::Event::None) {
+            stopAlarm();
         }
-    } else if (modeEvent == Button::Event::ShortPress) {
-        if (editMode == EditMode::Normal) {
-            enterEditHours();
-        } else if (editMode == EditMode::EditHours) {
-            enterEditMinutes();
-        } else if (editMode == EditMode::EditMinutes) {
-            exitEditMode();
-        } else if (editMode == EditMode::AlarmHours) {
-            enterAlarmMinutes();
-        } else if (editMode == EditMode::AlarmMinutes) {
-            saveAlarmAndGoHome();
-        }
-    }
 
-    // UP/DOWN work while editing either the clock or the alarm.
-    if (editMode == EditMode::EditHours) {
-        if (upButton.repeatPressed()) {
-            changeHour(currentHour, 1);
-        }
-        if (downButton.repeatPressed()) {
-            changeHour(currentHour, -1);
-        }
-    } else if (editMode == EditMode::EditMinutes) {
-        if (upButton.repeatPressed()) {
-            changeMinute(currentMinute, 1);
-        }
-        if (downButton.repeatPressed()) {
-            changeMinute(currentMinute, -1);
-        }
-    } else if (editMode == EditMode::AlarmHours) {
-        if (upButton.repeatPressed()) {
-            changeHour(alarmHour, 1);
-        }
-        if (downButton.repeatPressed()) {
-            changeHour(alarmHour, -1);
-        }
-    } else if (editMode == EditMode::AlarmMinutes) {
-        if (upButton.repeatPressed()) {
-            changeMinute(alarmMinute, 1);
-        }
-        if (downButton.repeatPressed()) {
-            changeMinute(alarmMinute, -1);
+        const bool upPressed = upButton.repeatPressed();
+        const bool downPressed = downButton.repeatPressed();
+
+        if (alarmRinging && (upPressed || downPressed)) {
+            snoozeAlarm();
         }
     } else {
-        upButton.repeatPressed();
-        downButton.repeatPressed();
+        if (modeEvent == Button::Event::LongPress) {
+            if (editMode == EditMode::Normal) {
+                enterAlarmHours();
+            }
+        } else if (modeEvent == Button::Event::ShortPress) {
+            if (editMode == EditMode::Normal) {
+                enterEditHours();
+            } else if (editMode == EditMode::EditHours) {
+                enterEditMinutes();
+            } else if (editMode == EditMode::EditMinutes) {
+                exitEditMode();
+            } else if (editMode == EditMode::AlarmHours) {
+                enterAlarmMinutes();
+            } else if (editMode == EditMode::AlarmMinutes) {
+                saveAlarmAndGoHome();
+            }
+        }
+
+        if (editMode == EditMode::EditHours) {
+            if (upButton.repeatPressed()) {
+                changeHour(currentHour, 1);
+            }
+            if (downButton.repeatPressed()) {
+                changeHour(currentHour, -1);
+            }
+        } else if (editMode == EditMode::EditMinutes) {
+            if (upButton.repeatPressed()) {
+                changeMinute(currentMinute, 1);
+            }
+            if (downButton.repeatPressed()) {
+                changeMinute(currentMinute, -1);
+            }
+        } else if (editMode == EditMode::AlarmHours) {
+            if (upButton.repeatPressed()) {
+                changeHour(alarmHour, 1);
+            }
+            if (downButton.repeatPressed()) {
+                changeHour(alarmHour, -1);
+            }
+        } else if (editMode == EditMode::AlarmMinutes) {
+            if (upButton.repeatPressed()) {
+                changeMinute(alarmMinute, 1);
+            }
+            if (downButton.repeatPressed()) {
+                changeMinute(alarmMinute, -1);
+            }
+        } else {
+            upButton.repeatPressed();
+            downButton.repeatPressed();
+        }
     }
 
-    // In normal mode the DS1307 remains the time source.
     if (editMode == EditMode::Normal && now - lastRtcRefresh >= RTC_REFRESH_INTERVAL_MS) {
         lastRtcRefresh = now;
         readRtcTime();
@@ -284,6 +404,8 @@ void loop() {
         lastEditBlink = now;
         editFieldVisible = !editFieldVisible;
     }
+
+    handleAlarm();
 
     if (now - lastRtcStatus >= RTC_STATUS_INTERVAL_MS) {
         lastRtcStatus = now;
