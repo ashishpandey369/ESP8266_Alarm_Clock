@@ -15,6 +15,10 @@ public:
     void stopAlarm();
     bool isActive() const;
 
+    // Hardware diagnostic. Tests the buzzer output without changing
+    // the normal alarm state machine.
+    void runDiagnostic(Stream &serial);
+
 private:
     uint8_t pin_;
     bool active_;
