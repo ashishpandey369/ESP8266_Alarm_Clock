@@ -6,11 +6,11 @@
 class RTCManager {
 public:
     bool begin();
-    bool isRunning() const;
-    bool hasValidTime() const;
-    bool getTime(uint8_t &hour, uint8_t &minute) const;
+    bool isRunning();
+    bool hasValidTime();
+    bool getTime(uint8_t &hour, uint8_t &minute);
     bool setTime(uint8_t hour, uint8_t minute);
-    void printStatus(Stream &serial) const;
+    void printStatus(Stream &serial);
 
 private:
     RTC_DS1307 rtc_;
